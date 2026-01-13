@@ -21,7 +21,7 @@ class TestAgentConfig:
         assert config.turn_rate == 0.3
         assert config.persistence == 0.8
         assert config.boundary_mode == "reflect"
-        assert config.injection_power == 0.15
+        assert config.injection_power == 2.0  # Must be > 1.0 to overcome negative Lenia growth
         assert config.injection_enabled is True
 
     def test_custom_values(self):

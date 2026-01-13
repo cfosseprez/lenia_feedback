@@ -31,7 +31,7 @@ class FieldConfig:
     # Dynamics
     dt: float = 0.1           # Time step
     diffusion: float = 0.01   # Additional diffusion (beyond Lenia kernel)
-    decay: float = 0.001      # Passive decay rate
+    decay: float = 0.02       # Passive decay rate (higher = more dynamic, less accumulation)
     
     # Morphogen injection
     injection_radius: float = 5.0   # Radius of injection spot
@@ -39,6 +39,7 @@ class FieldConfig:
     
     # Performance
     use_fft: bool = True      # Use FFT convolution (faster for large kernels)
+    skip_diffusion: bool = True   # Skip extra diffusion convolution (not part of standard Lenia)
 
 
 def make_kernel(config: FieldConfig) -> jnp.ndarray:
@@ -112,12 +113,12 @@ def convolve_fft(field: jnp.ndarray, kernel: jnp.ndarray,
 
 
 @partial(jit, static_argnums=(2, 3))
-def create_injection_mask(positions: jnp.ndarray,
-                          powers: jnp.ndarray,
-                          shape: Tuple[int, int],
-                          radius: float) -> jnp.ndarray:
-    """Create injection mask from positions.
-    
+def create_injection_mask_dense(positions: jnp.ndarray,
+                                powers: jnp.ndarray,
+                                shape: Tuple[int, int],
+                                radius: float) -> jnp.ndarray:
+    """Create injection mask from positions (dense version - slow for large fields).
+
     Args:
         positions: (N, 2) array of (x, y) positions
         powers: (N,) array of injection powers per point
@@ -126,23 +127,121 @@ def create_injection_mask(positions: jnp.ndarray,
     """
     h, w = shape
     y_grid, x_grid = jnp.mgrid[0:h, 0:w]
-    
+
     mask = jnp.zeros((h, w))
-    
+
     def add_point(mask, pos_power):
         pos, power = pos_power[:2], pos_power[2]
         x, y = pos[0], pos[1]
         dist = jnp.sqrt((x_grid - x)**2 + (y_grid - y)**2)
         contribution = power * jnp.exp(-(dist**2) / (2 * radius**2))
         return mask + contribution
-    
+
     # Vectorized version using scan
     if positions.shape[0] > 0:
         pos_powers = jnp.concatenate([positions, powers[:, None]], axis=1)
-        mask, _ = jax.lax.scan(lambda m, pp: (add_point(m, pp), None), 
+        mask, _ = jax.lax.scan(lambda m, pp: (add_point(m, pp), None),
                                mask, pos_powers)
-    
+
     return mask
+
+
+def create_injection_mask_sparse(positions: np.ndarray,
+                                 powers: np.ndarray,
+                                 shape: Tuple[int, int],
+                                 radius: float) -> np.ndarray:
+    """Create injection mask using sparse local computation.
+
+    MUCH faster than dense version for large fields (e.g., 2000x2000).
+    Only computes Gaussian within a small bounding box around each agent.
+
+    Complexity: O(N * box_size^2) instead of O(N * H * W)
+    For 100 agents, radius=5: O(100 * 900) = 90K ops vs O(100 * 4M) = 400M ops
+
+    Args:
+        positions: (N, 2) array of (x, y) positions
+        powers: (N,) array of injection powers per point
+        shape: (height, width) of field
+        radius: injection spot radius
+
+    Returns:
+        Injection mask as numpy array
+    """
+    h, w = shape
+    mask = np.zeros((h, w), dtype=np.float32)
+
+    if len(positions) == 0:
+        return mask
+
+    # Bounding box size (3 sigma covers 99.7% of Gaussian)
+    box_size = int(radius * 3) + 1
+
+    # Pre-compute local coordinate grid for the stamp
+    local_coords = np.arange(-box_size, box_size + 1, dtype=np.float32)
+    local_xx, local_yy = np.meshgrid(local_coords, local_coords)
+    dist_sq_template = local_xx**2 + local_yy**2
+
+    # Pre-compute Gaussian template (normalized, will be scaled by power)
+    gaussian_template = np.exp(-dist_sq_template / (2 * radius**2))
+
+    stamp_size = 2 * box_size + 1
+
+    for i in range(len(positions)):
+        x, y = positions[i]
+        power = powers[i]
+
+        if power <= 0:
+            continue
+
+        # Integer position for indexing
+        ix, iy = int(round(x)), int(round(y))
+
+        # Compute bounds with clipping
+        x0 = ix - box_size
+        y0 = iy - box_size
+        x1 = ix + box_size + 1
+        y1 = iy + box_size + 1
+
+        # Clip to field boundaries
+        field_x0 = max(0, x0)
+        field_y0 = max(0, y0)
+        field_x1 = min(w, x1)
+        field_y1 = min(h, y1)
+
+        # Corresponding stamp region
+        stamp_x0 = field_x0 - x0
+        stamp_y0 = field_y0 - y0
+        stamp_x1 = stamp_size - (x1 - field_x1)
+        stamp_y1 = stamp_size - (y1 - field_y1)
+
+        # Add scaled Gaussian stamp
+        if field_x1 > field_x0 and field_y1 > field_y0:
+            mask[field_y0:field_y1, field_x0:field_x1] += (
+                power * gaussian_template[stamp_y0:stamp_y1, stamp_x0:stamp_x1]
+            )
+
+    return mask
+
+
+def create_injection_mask(positions, powers, shape, radius, use_sparse=True):
+    """Create injection mask - auto-selects sparse or dense based on field size.
+
+    Args:
+        positions: (N, 2) array of (x, y) positions
+        powers: (N,) array of injection powers per point
+        shape: (height, width) of field
+        radius: injection spot radius
+        use_sparse: Force sparse mode (default True, much faster for large fields)
+    """
+    h, w = shape
+
+    # Use sparse for large fields (> 500x500) or when explicitly requested
+    if use_sparse or (h * w > 250000):
+        positions_np = np.asarray(positions, dtype=np.float32)
+        powers_np = np.asarray(powers, dtype=np.float32)
+        return create_injection_mask_sparse(positions_np, powers_np, shape, radius)
+    else:
+        return create_injection_mask_dense(positions, powers, shape, radius)
 
 
 class LeniaField:
@@ -156,8 +255,8 @@ class LeniaField:
         self.lenia_kernel = make_kernel(self.config)
         self.diffusion_kernel = make_diffusion_kernel()
         
-        # JIT compile the step function
-        self._step_jit = jit(self._step_impl)
+        # JIT compile the step function (skip_diffusion is static arg index 10)
+        self._step_jit = jit(self._step_impl, static_argnums=(10,))
         
     def reset(self):
         """Reset field to zero."""
@@ -176,12 +275,12 @@ class LeniaField:
                    decay: float,
                    growth_mu: float,
                    growth_sigma: float,
-                   growth_amplitude: float) -> jnp.ndarray:
+                   growth_amplitude: float,
+                   skip_diffusion: bool) -> jnp.ndarray:
         """Single step of the simulation."""
 
         h, w = field.shape
         kh, kw = lenia_kernel.shape
-        dkh, dkw = diffusion_kernel.shape
 
         # Lenia-style update: convolve then apply growth function
         # Always use FFT convolution for periodic boundaries
@@ -190,9 +289,13 @@ class LeniaField:
         # Growth function
         growth = growth_function(potential, growth_mu, growth_sigma)
 
-        # Additional diffusion term using FFT convolution
-        laplacian = convolve_fft(field, diffusion_kernel, (h, w), (dkh, dkw))
-        diffusion_term = diffusion * laplacian
+        # Additional diffusion term (optional - skip for large fields)
+        if skip_diffusion:
+            diffusion_term = 0.0
+        else:
+            dkh, dkw = diffusion_kernel.shape
+            laplacian = convolve_fft(field, diffusion_kernel, (h, w), (dkh, dkw))
+            diffusion_term = diffusion * laplacian
 
         # Update field
         field_new = field + dt * (
@@ -247,7 +350,8 @@ class LeniaField:
             self.config.decay,
             self.config.growth_mu,
             self.config.growth_sigma,
-            self.config.growth_amplitude
+            self.config.growth_amplitude,
+            self.config.skip_diffusion
         )
         
         return np.array(self.field)

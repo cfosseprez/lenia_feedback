@@ -105,12 +105,9 @@ class LeniaClient:
         Returns:
             Connected LeniaClient instance
         """
-        # Find server script
-        server_script = os.path.join(os.path.dirname(__file__), 'server.py')
-        
-        # Start server process
+        # Start server process using module invocation (for relative imports)
         cmd = [
-            sys.executable, server_script,
+            sys.executable, '-m', 'lenia_field.server',
             '--port', str(port),
             '--width', str(width),
             '--height', str(height),

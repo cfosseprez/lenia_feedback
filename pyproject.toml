@@ -42,6 +42,7 @@ dependencies = [
     "pyzmq>=22.0.0",
     "msgpack>=1.0.0",
     "msgpack-numpy>=0.4.8",
+    "pyyaml>=6.0.0",
 ]
 
 [project.optional-dependencies]

@@ -16,6 +16,7 @@ Usage:
 
 from .core import LeniaField, FieldConfig, make_kernel
 from .client import LeniaClient, LeniaClientAsync, LeniaResponse
+from .config_manager import ConfigManager, load_config
 from .simulation import (
     Agent,
     AgentConfig,
@@ -35,6 +36,9 @@ __all__ = [
     "LeniaClient",
     "LeniaClientAsync",
     "LeniaResponse",
+    # Config
+    "ConfigManager",
+    "load_config",
     # Simulation
     "Agent",
     "AgentConfig",

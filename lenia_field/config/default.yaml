@@ -1,0 +1,47 @@
+# Lenia Field Simulation - Default Configuration
+# Override these values at runtime or by providing a custom config file
+
+# Field configuration
+field:
+  width: 512
+  height: 512
+  kernel_radius: 13
+  kernel_sigma: 0.5
+  growth_mu: 0.15
+  growth_sigma: 0.015
+  growth_amplitude: 1.0
+  dt: 0.1
+  diffusion: 0.01
+  decay: 0.02
+  injection_radius: 5.0
+  injection_power: 0.1
+  use_fft: true
+  skip_diffusion: true
+
+# Agent configuration
+agent:
+  speed: 2.0
+  turn_rate: 0.3
+  persistence: 0.8
+  boundary_mode: "reflect"
+  boundary_margin: 5.0
+  injection_power: 2.0
+  injection_enabled: true
+  color: [255, 255, 0]  # BGR - cyan
+  radius: 4
+
+# Simulation configuration
+simulation:
+  num_agents: 10
+  use_client: false
+  client_port: 5560
+
+# Visualization configuration
+visualization:
+  display_scale: 1
+  colormap: 13  # COLORMAP_PLASMA
+  show_fps: true
+  show_stats: true
+  target_fps: 60
+  display_skip: 1
+  display_downscale: 1

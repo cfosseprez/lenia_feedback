@@ -5,7 +5,14 @@ Provides an interactive demo where agents perform directed random walk,
 injecting morphogen into the Lenia field as they move.
 
 Usage:
-    python simulation.py --agents 20 --width 256 --height 256
+    # Run with default config (from lenia_field/config/default.yaml)
+    python simulation.py
+
+    # Run with custom config file
+    python simulation.py --config my_config.yaml
+
+    # Run with runtime overrides (use double underscore for nesting)
+    python simulation.py --override field__width=1024 --override agent__speed=3.0
 
 Controls:
     SPACE: Pause/Resume
@@ -28,9 +35,11 @@ from typing import Optional, List, Tuple, Dict, Any
 try:
     from .core import LeniaField, FieldConfig
     from .client import LeniaClient
+    from .config_manager import ConfigManager, load_config
 except ImportError:
     from core import LeniaField, FieldConfig
     from client import LeniaClient
+    from config_manager import ConfigManager, load_config
 
 
 @dataclass
@@ -246,6 +255,8 @@ class SimulationConfig:
     show_fps: bool = True
     show_stats: bool = True
     target_fps: int = 60                  # Target frame rate (0 = unlimited)
+    display_skip: int = 1                 # Only render every N frames (1 = every frame)
+    display_downscale: int = 1            # Downscale display by this factor (computation stays full res)
 
 
 class Simulation:
@@ -791,9 +802,12 @@ def run_simulation(
     # Extract field config parameters
     field_params = {}
     for key in ['dt', 'diffusion', 'decay', 'injection_radius', 'injection_power',
-                'kernel_radius', 'growth_mu', 'growth_sigma']:
+                'kernel_radius', 'growth_mu', 'growth_sigma', 'skip_diffusion']:
         if key in kwargs:
             field_params[key] = kwargs.pop(key)
+
+    # Note: skip_diffusion can be enabled for large fields to improve performance
+    # The extra diffusion term is not part of standard Lenia, but may be desired for this use case
 
     field_config = FieldConfig(
         width=width,
@@ -824,33 +838,107 @@ def run_simulation(
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description='Lenia Agent Simulation')
-    parser.add_argument('--agents', '-n', type=int, default=100,
-                        help='Number of agents (default: 10)')
-    parser.add_argument('--width', '-W', type=int, default=2000,
-                        help='Field width (default: 512)')
-    parser.add_argument('--height', '-H', type=int, default=2000,
-                        help='Field height (default: 512)')
-    parser.add_argument('--client', action='store_true',
-                        help='Use subprocess server')
-    parser.add_argument('--speed', type=float, default=2.0,
-                        help='Agent speed (default: 2.0)')
-    parser.add_argument('--persistence', type=float, default=0.8,
-                        help='Agent path persistence 0-1 (default: 0.8)')
-    parser.add_argument('--diffusion', type=float, default=0.01,
-                        help='Field diffusion rate (default: 0.01)')
-    parser.add_argument('--decay', type=float, default=0.001,
-                        help='Field decay rate (default: 0.001)')
+    parser = argparse.ArgumentParser(
+        description='Lenia Agent Simulation',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+    python simulation.py
+    python simulation.py --config custom.yaml
+    python simulation.py --override field__width=1024 --override simulation__num_agents=50
+        """
+    )
+    parser.add_argument('--config', '-c', type=str, default=None,
+                        help='Path to custom YAML config file')
+    parser.add_argument('--override', '-o', action='append', default=[],
+                        help='Runtime override in key=value format (use __ for nesting)')
 
     args = parser.parse_args()
 
-    run_simulation(
-        num_agents=args.agents,
-        width=args.width,
-        height=args.height,
-        use_client=args.client,
-        speed=args.speed,
-        persistence=args.persistence,
-        diffusion=args.diffusion,
-        decay=args.decay
+    # Parse overrides into dict
+    overrides = {}
+    for override in args.override:
+        if '=' in override:
+            key, value = override.split('=', 1)
+            # Try to parse as number or bool
+            try:
+                if '.' in value:
+                    value = float(value)
+                elif value.lower() in ('true', 'false'):
+                    value = value.lower() == 'true'
+                else:
+                    value = int(value)
+            except ValueError:
+                pass  # Keep as string
+
+            # Convert double underscore to nested dict
+            parts = key.split('__')
+            current = overrides
+            for part in parts[:-1]:
+                if part not in current:
+                    current[part] = {}
+                current = current[part]
+            current[parts[-1]] = value
+
+    # Load config
+    config = ConfigManager(config_path=args.config, overrides=overrides if overrides else None)
+
+    # Extract values from config
+    field_section = config.get_section('field')
+    agent_section = config.get_section('agent')
+    sim_section = config.get_section('simulation')
+    viz_section = config.get_section('visualization')
+
+    # Build FieldConfig
+    field_config = FieldConfig(
+        width=field_section.get('width', 512),
+        height=field_section.get('height', 512),
+        kernel_radius=field_section.get('kernel_radius', 13),
+        kernel_sigma=field_section.get('kernel_sigma', 0.5),
+        growth_mu=field_section.get('growth_mu', 0.15),
+        growth_sigma=field_section.get('growth_sigma', 0.015),
+        growth_amplitude=field_section.get('growth_amplitude', 1.0),
+        dt=field_section.get('dt', 0.1),
+        diffusion=field_section.get('diffusion', 0.01),
+        decay=field_section.get('decay', 0.02),
+        injection_radius=field_section.get('injection_radius', 5.0),
+        injection_power=field_section.get('injection_power', 0.1),
+        use_fft=field_section.get('use_fft', True),
+        skip_diffusion=field_section.get('skip_diffusion', True),
     )
+
+    # Build AgentConfig
+    agent_color = agent_section.get('color', [255, 255, 0])
+    if isinstance(agent_color, list):
+        agent_color = tuple(agent_color)
+
+    agent_config = AgentConfig(
+        speed=agent_section.get('speed', 2.0),
+        turn_rate=agent_section.get('turn_rate', 0.3),
+        persistence=agent_section.get('persistence', 0.8),
+        boundary_mode=agent_section.get('boundary_mode', 'reflect'),
+        boundary_margin=agent_section.get('boundary_margin', 5.0),
+        injection_power=agent_section.get('injection_power', 2.0),
+        injection_enabled=agent_section.get('injection_enabled', True),
+        color=agent_color,
+        radius=agent_section.get('radius', 4),
+    )
+
+    # Build SimulationConfig
+    sim_config = SimulationConfig(
+        field_config=field_config,
+        agent_config=agent_config,
+        num_agents=sim_section.get('num_agents', 10),
+        use_client=sim_section.get('use_client', False),
+        client_port=sim_section.get('client_port', 5560),
+        target_fps=viz_section.get('target_fps', 60),
+        display_scale=viz_section.get('display_scale', 1),
+        colormap=viz_section.get('colormap', 13),
+        show_fps=viz_section.get('show_fps', True),
+        show_stats=viz_section.get('show_stats', True),
+    )
+
+    # Run simulation
+    sim = Simulation(sim_config)
+    viz = SimulationVisualizer(sim)
+    viz.run()

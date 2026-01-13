@@ -111,8 +111,8 @@ def convolve_fft(field: jnp.ndarray, kernel: jnp.ndarray,
     return jnp.real(result)
 
 
-@partial(jit, static_argnums=(3,))
-def create_injection_mask(positions: jnp.ndarray, 
+@partial(jit, static_argnums=(2, 3))
+def create_injection_mask(positions: jnp.ndarray,
                           powers: jnp.ndarray,
                           shape: Tuple[int, int],
                           radius: float) -> jnp.ndarray:
@@ -167,9 +167,10 @@ class LeniaField:
         """Set field from numpy array."""
         self.field = jnp.array(field)
         
-    def _step_impl(self, field: jnp.ndarray, 
+    def _step_impl(self, field: jnp.ndarray,
                    injection_mask: jnp.ndarray,
                    lenia_kernel: jnp.ndarray,
+                   diffusion_kernel: jnp.ndarray,
                    dt: float,
                    diffusion: float,
                    decay: float,
@@ -177,31 +178,22 @@ class LeniaField:
                    growth_sigma: float,
                    growth_amplitude: float) -> jnp.ndarray:
         """Single step of the simulation."""
-        
+
         h, w = field.shape
         kh, kw = lenia_kernel.shape
-        
+        dkh, dkw = diffusion_kernel.shape
+
         # Lenia-style update: convolve then apply growth function
-        if self.config.use_fft:
-            potential = convolve_fft(field, lenia_kernel, (h, w), (kh, kw))
-        else:
-            # Direct convolution (slower but sometimes more stable)
-            potential = jax.scipy.signal.convolve2d(
-                field, lenia_kernel, mode='same', boundary='wrap'
-            )
-        
+        # Always use FFT convolution for periodic boundaries
+        potential = convolve_fft(field, lenia_kernel, (h, w), (kh, kw))
+
         # Growth function
         growth = growth_function(potential, growth_mu, growth_sigma)
-        
-        # Additional diffusion term
-        if diffusion > 0:
-            laplacian = jax.scipy.signal.convolve2d(
-                field, self.diffusion_kernel, mode='same', boundary='wrap'
-            )
-            diffusion_term = diffusion * laplacian
-        else:
-            diffusion_term = 0.0
-        
+
+        # Additional diffusion term using FFT convolution
+        laplacian = convolve_fft(field, diffusion_kernel, (h, w), (dkh, dkw))
+        diffusion_term = diffusion * laplacian
+
         # Update field
         field_new = field + dt * (
             growth_amplitude * growth +  # Lenia dynamics
@@ -209,10 +201,10 @@ class LeniaField:
             injection_mask -              # External injection
             decay * field                 # Decay
         )
-        
+
         # Clamp to valid range
         field_new = jnp.clip(field_new, 0.0, 1.0)
-        
+
         return field_new
     
     def step(self, 
@@ -249,6 +241,7 @@ class LeniaField:
             self.field,
             injection_mask,
             self.lenia_kernel,
+            self.diffusion_kernel,
             self.config.dt,
             self.config.diffusion,
             self.config.decay,

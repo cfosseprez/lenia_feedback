@@ -15,7 +15,7 @@ import sys
 # Patch msgpack for numpy support
 m.patch()
 
-from core import LeniaField, FieldConfig
+from .core import LeniaField, FieldConfig
 
 
 class LeniaServer:

@@ -16,13 +16,30 @@ Usage:
 
 from .core import LeniaField, FieldConfig, make_kernel
 from .client import LeniaClient, LeniaClientAsync, LeniaResponse
+from .simulation import (
+    Agent,
+    AgentConfig,
+    Simulation,
+    SimulationConfig,
+    SimulationVisualizer,
+    run_simulation,
+)
 
 __version__ = "0.1.0"
 __all__ = [
+    # Core
     "LeniaField",
-    "FieldConfig", 
+    "FieldConfig",
+    "make_kernel",
+    # Client
     "LeniaClient",
     "LeniaClientAsync",
     "LeniaResponse",
-    "make_kernel"
+    # Simulation
+    "Agent",
+    "AgentConfig",
+    "Simulation",
+    "SimulationConfig",
+    "SimulationVisualizer",
+    "run_simulation",
 ]

@@ -56,15 +56,20 @@ viz = [
     "opencv-python>=4.5.0",
     "matplotlib>=3.5.0",
 ]
+optimize = [
+    "scipy>=1.7.0",
+    "matplotlib>=3.5.0",  # For plotting optimization results
+]
 dev = [
     "pytest>=7.0.0",
     "pytest-benchmark>=4.0.0",
     "black>=23.0.0",
     "ruff>=0.1.0",
     "mypy>=1.0.0",
+    "scipy>=1.7.0",  # For optimizer tests
 ]
 all = [
-    "lenia_field[viz,dev]",
+    "lenia_field[viz,optimize,dev]",
 ]
 
 [project.scripts]

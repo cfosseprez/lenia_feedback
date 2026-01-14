@@ -20,10 +20,32 @@ from .config_manager import ConfigManager, load_config
 from .simulation import (
     Agent,
     AgentConfig,
+    MetricsLogger,
     Simulation,
     SimulationConfig,
     SimulationVisualizer,
     run_simulation,
+)
+from .optimizer import (
+    LeniaOptimizer,
+    OptimizationTarget,
+    OptimizationResult,
+    EvaluationMetrics,
+    ParameterSpec,
+    quick_optimize,
+    optimize_from_simulation,
+    plot_sensitivity,
+    plot_sensitivity_heatmap,
+)
+from .presets import (
+    PresetManager,
+    get_optimized_config,
+    apply_optimized_params,
+    save_optimized_preset,
+    list_presets,
+    get_preset_path,
+    preset_exists,
+    delete_preset,
 )
 
 __version__ = "0.1.0"
@@ -46,4 +68,23 @@ __all__ = [
     "SimulationConfig",
     "SimulationVisualizer",
     "run_simulation",
+    # Optimizer
+    "LeniaOptimizer",
+    "OptimizationTarget",
+    "OptimizationResult",
+    "EvaluationMetrics",
+    "ParameterSpec",
+    "quick_optimize",
+    "optimize_from_simulation",
+    "plot_sensitivity",
+    "plot_sensitivity_heatmap",
+    # Presets
+    "PresetManager",
+    "get_optimized_config",
+    "apply_optimized_params",
+    "save_optimized_preset",
+    "list_presets",
+    "get_preset_path",
+    "preset_exists",
+    "delete_preset",
 ]

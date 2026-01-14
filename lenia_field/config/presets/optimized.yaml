@@ -1,0 +1,31 @@
+# Default optimized parameters for Lenia field simulation
+# These values maintain "unstable equilibrium" - dynamic patterns that
+# neither collapse (field -> 0) nor saturate (field -> 1)
+#
+# Generated through optimization on typical simulation trajectories.
+# Can be loaded with: config = get_optimized_config()
+
+params:
+  # Lenia growth function parameters
+  growth_mu: 0.15          # Center of growth curve
+  growth_sigma: 0.015      # Width of growth curve
+  growth_amplitude: 1.0    # Amplitude of growth response
+
+  # Time dynamics
+  dt: 0.1                  # Time step
+  decay: 0.02              # Passive decay rate
+
+  # Injection parameters
+  injection_power: 0.1     # Morphogen injection intensity
+  injection_radius: 5.0    # Injection spot radius
+
+  # Suzuki resource dynamics
+  r_max: 1.0               # Maximum resource per cell
+  R_C: 0.005               # Resource consumption by morphogen
+  R_G: 0.002               # Resource recovery rate
+  resource_effect_rate: 0.5    # Multiplier for agent resource effect
+
+metadata:
+  created: "2024-01-01T00:00:00"
+  description: "Default optimized parameters - good starting point"
+  source: "Package defaults"

@@ -23,6 +23,8 @@ Real-time Lenia-inspired morphogen field with external stimulus injection. Desig
 - `core.py` - JAX-based Lenia field simulation (LeniaField, FieldConfig)
 - `server.py` - ZMQ server wrapping LeniaField for non-blocking operation
 - `client.py` - Client API for spawning/connecting to server
+- `simulation.py` - Agent simulation with trajectories (Agent, Simulation)
+- `optimizer.py` - Parameter optimization with visualization
 - `__init__.py` - Package exports
 
 ## Real-Time Position Integration
@@ -119,3 +121,110 @@ Recommended for testing: `injection_power=2.0` or higher.
 - FFT convolution (`use_fft=True`) faster for kernel_radius > 7
 - JIT compilation warms up on first call
 - Target: ~200+ FPS on GPU at 512x512
+
+## Parameter Optimizer
+
+The `optimizer.py` module finds parameters that maintain "unstable equilibrium" - dynamic patterns that neither collapse nor saturate.
+
+### Basic Usage
+
+```python
+from lenia_field import LeniaOptimizer, quick_optimize
+import numpy as np
+
+# Load trajectory data
+trajectories = np.load("positions.npy")  # (n_frames, n_agents, 2)
+
+# Quick optimization
+result = quick_optimize(trajectories, width=512, height=512, n_iterations=100)
+
+# Or with more control
+optimizer = LeniaOptimizer(width=512, height=512, suzuki_style=True)
+result = optimizer.optimize(trajectories, n_iterations=100)
+
+# Save results
+result.save("optimization_result.json")
+print(result.summary())
+```
+
+### Visualization (requires matplotlib)
+
+```bash
+pip install lenia_field[viz]     # or pip install lenia_field[optimize]
+```
+
+```python
+# Plot convergence
+result.plot_convergence(save_path="convergence.png")
+
+# Plot parameter importance (correlation with fitness)
+result.plot_parameter_importance()
+
+# Plot all visualizations
+result.plot_all(save_dir="plots/", show=False)
+
+# Sensitivity analysis
+sensitivity = optimizer.sensitivity_analysis(trajectories, n_points=10)
+from lenia_field import plot_sensitivity
+plot_sensitivity(sensitivity, save_path="sensitivity.png")
+
+# 2D heatmap of two parameters
+from lenia_field import plot_sensitivity_heatmap
+plot_sensitivity_heatmap(
+    optimizer, trajectories,
+    param1="growth_mu", param2="decay",
+    n_points=15
+)
+```
+
+### Optimizable Parameters
+
+**Default (all modes):**
+- `growth_mu`, `growth_sigma`, `growth_amplitude` - Lenia growth function
+- `dt`, `decay` - Time dynamics
+- `injection_power`, `injection_radius` - Agent injection
+
+**Suzuki mode (default):**
+- `r_max` - Maximum resource per cell
+- `R_C` - Resource consumption by morphogen
+- `R_G` - Resource recovery rate
+- `consumption_rate` - Agent resource consumption
+
+### OptimizationResult Methods
+
+- `save(path)` / `load(path)` - JSON serialization
+- `summary()` - Text summary of results
+- `plot_convergence()` - Fitness over iterations
+- `plot_parameter_history()` - Parameter values over time
+- `plot_parameter_importance()` - Correlation with fitness
+- `plot_metrics_evolution()` - Field metrics over time
+- `plot_parallel_coordinates()` - Top parameter combinations
+- `plot_all(save_dir)` - Generate all plots
+
+### Scipy Optimization
+
+```python
+result = optimizer.optimize_scipy(
+    trajectories,
+    method="L-BFGS-B",
+    n_restarts=3,
+    maxiter=100
+)
+```
+
+### Custom Targets
+
+```python
+from lenia_field import OptimizationTarget
+
+target = OptimizationTarget(
+    field_mean_target=0.2,      # Target mean field value
+    field_mean_tolerance=0.1,   # Acceptable deviation
+    field_std_min=0.05,         # Minimum spatial variance
+    field_std_max=0.3,          # Maximum spatial variance
+    temporal_change_min=0.001,  # Minimum frame-to-frame change
+    temporal_change_max=0.1,    # Maximum frame-to-frame change
+)
+
+optimizer = LeniaOptimizer(target=target)
+```

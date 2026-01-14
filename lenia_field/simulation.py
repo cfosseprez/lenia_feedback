@@ -22,14 +22,18 @@ Controls:
     d/D: Decrease/Increase diffusion
     c/C: Decrease/Increase decay
     s/S: Decrease/Increase agent speed
+    m: Toggle metrics logging (debug)
+    v: Toggle resource/field view (Suzuki mode)
     h: Print help
     q: Quit
 """
 
 import numpy as np
 import time
+import csv
 from dataclasses import dataclass, field
 from typing import Optional, List, Tuple, Dict, Any
+from collections import deque
 
 # Support both direct execution and package import
 try:
@@ -40,6 +44,144 @@ except ImportError:
     from core import LeniaField, FieldConfig
     from client import LeniaClient
     from config_manager import ConfigManager, load_config
+
+
+class MetricsLogger:
+    """
+    Logger for Lenia simulation metrics.
+
+    Tracks field, resource, injection, and growth statistics over time.
+    Can output to console and/or CSV file for later analysis.
+    """
+
+    def __init__(self, log_file: Optional[str] = None, buffer_size: int = 100):
+        """
+        Initialize metrics logger.
+
+        Args:
+            log_file: Optional path to CSV file for logging
+            buffer_size: Number of recent metrics to keep in memory
+        """
+        self.log_file = log_file
+        self.buffer_size = buffer_size
+        self._buffer: deque = deque(maxlen=buffer_size)
+        self._csv_writer = None
+        self._csv_file = None
+        self._step_count = 0
+        self._enabled = False
+        self._console_interval = 30  # Print to console every N steps
+
+        if log_file:
+            self._setup_csv(log_file)
+
+    def _setup_csv(self, path: str):
+        """Setup CSV file for logging."""
+        self._csv_file = open(path, 'w', newline='')
+        self._csv_writer = None  # Will be created on first write with headers
+
+    def enable(self):
+        """Enable logging."""
+        self._enabled = True
+        print("[MetricsLogger] Enabled")
+
+    def disable(self):
+        """Disable logging."""
+        self._enabled = False
+        print("[MetricsLogger] Disabled")
+
+    def toggle(self):
+        """Toggle logging on/off."""
+        if self._enabled:
+            self.disable()
+        else:
+            self.enable()
+
+    @property
+    def is_enabled(self) -> bool:
+        return self._enabled
+
+    def log(self, metrics: Dict[str, Any]):
+        """
+        Log metrics for current step.
+
+        Args:
+            metrics: Dictionary of metrics from LeniaField.step_with_metrics()
+        """
+        if not self._enabled:
+            return
+
+        self._step_count += 1
+        metrics['step'] = self._step_count
+
+        # Add timestamp
+        metrics['timestamp'] = time.time()
+
+        # Remove the field array from logged metrics (too large)
+        log_metrics = {k: v for k, v in metrics.items() if k != 'field'}
+
+        # Add to buffer
+        self._buffer.append(log_metrics)
+
+        # Write to CSV
+        if self._csv_file:
+            if self._csv_writer is None:
+                # Create writer with headers on first write
+                self._csv_writer = csv.DictWriter(self._csv_file, fieldnames=log_metrics.keys())
+                self._csv_writer.writeheader()
+            self._csv_writer.writerow(log_metrics)
+            self._csv_file.flush()
+
+        # Print to console periodically
+        if self._step_count % self._console_interval == 0:
+            self._print_summary(log_metrics)
+
+    def _print_summary(self, metrics: Dict[str, Any]):
+        """Print summary to console."""
+        print(f"\n[Step {metrics['step']}] Lenia Metrics:")
+        print(f"  Field:    mean={metrics.get('field_mean', 0):.4f}, max={metrics.get('field_max', 0):.4f}, std={metrics.get('field_std', 0):.4f}")
+
+        if 'resource_mean' in metrics:
+            print(f"  Resource: mean={metrics.get('resource_mean', 0):.4f}, min={metrics.get('resource_min', 0):.4f}, max={metrics.get('resource_max', 0):.4f}")
+
+        print(f"  Injection: total={metrics.get('injection_total', 0):.2f}, max={metrics.get('injection_max', 0):.4f}")
+
+        print(f"  Growth:   pos={metrics.get('growth_positive', 0):.2f}, neg={metrics.get('growth_negative', 0):.2f}, mean={metrics.get('growth_mean', 0):.4f}")
+        print(f"  Decay:    total={metrics.get('decay_total', 0):.2f}")
+        print(f"  Delta:    mean={metrics.get('delta_field_mean', 0):.6f}, max={metrics.get('delta_field_max', 0):.4f}")
+
+        if 'delta_resource_mean' in metrics:
+            print(f"  Res.Delta: mean={metrics.get('delta_resource_mean', 0):.6f}")
+
+    def get_recent(self, n: int = 10) -> List[Dict[str, Any]]:
+        """Get n most recent metrics."""
+        return list(self._buffer)[-n:]
+
+    def get_averages(self, n: int = 30) -> Dict[str, float]:
+        """Get averages over last n steps."""
+        if len(self._buffer) == 0:
+            return {}
+
+        recent = list(self._buffer)[-n:]
+        if not recent:
+            return {}
+
+        # Compute averages for numeric fields
+        averages = {}
+        keys = [k for k in recent[0].keys() if k not in ('step', 'timestamp', 'field')]
+
+        for key in keys:
+            values = [m.get(key, 0) for m in recent if key in m]
+            if values:
+                averages[key] = sum(values) / len(values)
+
+        return averages
+
+    def close(self):
+        """Close log file."""
+        if self._csv_file:
+            self._csv_file.close()
+            self._csv_file = None
+            self._csv_writer = None
 
 
 @dataclass
@@ -309,6 +451,10 @@ class Simulation:
         # FPS tracking
         self._fps = 0.0
 
+        # Metrics logging (disabled by default, toggle with 'm' key)
+        self._metrics_logger: Optional[MetricsLogger] = None
+        self._use_metrics = False
+
     def _create_agents(self) -> List[Agent]:
         """Create agents at random positions."""
         width = self.config.field_config.width
@@ -406,13 +552,21 @@ class Simulation:
             inject_positions = None
             inject_powers = None
 
-        # Step field
+        # Step field (with or without metrics)
         if self._client is not None:
             response = self._client.step(
                 positions=inject_positions,
                 powers=inject_powers
             )
             self._last_field = response.field if response.ok else self._last_field
+        elif self._use_metrics and self._metrics_logger:
+            # Use step_with_metrics for logging
+            metrics = self._field.step_with_metrics(
+                positions=inject_positions,
+                powers=inject_powers
+            )
+            self._last_field = metrics['field']
+            self._metrics_logger.log(metrics)
         else:
             self._last_field = self._field.step(
                 positions=inject_positions,
@@ -470,6 +624,48 @@ class Simulation:
         else:
             self._field.update_config(**kwargs)
 
+    def enable_metrics(self, log_file: Optional[str] = None):
+        """
+        Enable metrics logging.
+
+        Args:
+            log_file: Optional path to CSV file for logging metrics
+        """
+        if self._metrics_logger is None:
+            self._metrics_logger = MetricsLogger(log_file=log_file)
+        self._metrics_logger.enable()
+        self._use_metrics = True
+
+    def disable_metrics(self):
+        """Disable metrics logging."""
+        if self._metrics_logger:
+            self._metrics_logger.disable()
+        self._use_metrics = False
+
+    def toggle_metrics(self):
+        """Toggle metrics logging on/off."""
+        if self._use_metrics:
+            self.disable_metrics()
+        else:
+            self.enable_metrics()
+        return self._use_metrics
+
+    @property
+    def metrics_enabled(self) -> bool:
+        """Whether metrics logging is enabled."""
+        return self._use_metrics
+
+    @property
+    def metrics_logger(self) -> Optional[MetricsLogger]:
+        """Get the metrics logger instance."""
+        return self._metrics_logger
+
+    def get_resource(self) -> Optional[np.ndarray]:
+        """Get current resource field (Suzuki mode only)."""
+        if self._field is not None and self.config.field_config.suzuki_style:
+            return self._field.get_resource()
+        return None
+
     def close(self):
         """Clean up resources."""
         if self._client is not None:
@@ -477,6 +673,8 @@ class Simulation:
                 self._client.shutdown()
             except Exception:
                 pass
+        if self._metrics_logger:
+            self._metrics_logger.close()
 
 
 class SimulationVisualizer:
@@ -492,6 +690,8 @@ class SimulationVisualizer:
     KEY_PAUSE = ord(' ')  # Space
     KEY_ADD_AGENT = ord('a')
     KEY_HELP = ord('h')
+    KEY_METRICS = ord('m')
+    KEY_RESOURCE = ord('v')  # Toggle resource view
 
     def __init__(self,
                  simulation: Simulation,
@@ -521,6 +721,9 @@ class SimulationVisualizer:
         # Track current config values for display
         self._current_diffusion = self.config.field_config.diffusion
         self._current_decay = self.config.field_config.decay
+
+        # Resource view toggle (for Suzuki mode)
+        self._show_resource = False
 
     def _setup_window(self):
         """Create and configure OpenCV window."""
@@ -571,9 +774,20 @@ class SimulationVisualizer:
         """Render a single frame."""
         import cv2
 
-        # Apply colormap to field
-        field_uint8 = (np.clip(field, 0, 1) * 255).astype(np.uint8)
-        frame = cv2.applyColorMap(field_uint8, self.config.colormap)
+        # Choose what to display: field or resource
+        if self._show_resource and self.config.field_config.suzuki_style:
+            resource = self.sim.get_resource()
+            if resource is not None:
+                # Normalize resource to [0, 1] range based on r_max
+                display_data = resource / self.config.field_config.r_max
+            else:
+                display_data = field
+        else:
+            display_data = field
+
+        # Apply colormap
+        data_uint8 = (np.clip(display_data, 0, 1) * 255).astype(np.uint8)
+        frame = cv2.applyColorMap(data_uint8, self.config.colormap)
 
         # Scale if needed
         if self.config.display_scale > 1:
@@ -631,6 +845,12 @@ class SimulationVisualizer:
 
         if self._adding_agents:
             texts.append("[Click to add agent]")
+
+        if self.sim.metrics_enabled:
+            texts.append("[METRICS ON - m to toggle]")
+
+        if self._show_resource:
+            texts.append("[RESOURCE VIEW - v to toggle]")
 
         for text in texts:
             cv2.putText(
@@ -701,6 +921,19 @@ class SimulationVisualizer:
                 agent.config.speed = min(10, agent.config.speed + 0.5)
             print("Agent speed increased")
 
+        # m: toggle metrics logging
+        elif key == self.KEY_METRICS:
+            enabled = self.sim.toggle_metrics()
+            print(f"Metrics logging: {'ON' if enabled else 'OFF'}")
+
+        # v: toggle resource view (Suzuki mode)
+        elif key == self.KEY_RESOURCE:
+            if self.config.field_config.suzuki_style:
+                self._show_resource = not self._show_resource
+                print(f"Showing: {'Resource field' if self._show_resource else 'Morphogen field'}")
+            else:
+                print("Resource view only available in Suzuki mode")
+
         return True
 
     def _print_help(self):
@@ -714,6 +947,8 @@ class SimulationVisualizer:
         print("  d/D: Decrease/Increase diffusion")
         print("  c/C: Decrease/Increase decay")
         print("  s/S: Decrease/Increase agent speed")
+        print("  m: Toggle metrics logging (debug)")
+        print("  v: Toggle resource/field view (Suzuki mode)")
         print("  h: Show this help")
         print("  q: Quit")
         print("================================\n")
@@ -802,12 +1037,14 @@ def run_simulation(
     # Extract field config parameters
     field_params = {}
     for key in ['dt', 'diffusion', 'decay', 'injection_radius', 'injection_power',
-                'kernel_radius', 'growth_mu', 'growth_sigma', 'skip_diffusion']:
+                'kernel_radius', 'growth_mu', 'growth_sigma', 'skip_diffusion',
+                'suzuki_style', 'r_max', 'r_initial', 'R_C', 'R_G', 'resource_rule',
+                'resource_effect_rate']:
         if key in kwargs:
             field_params[key] = kwargs.pop(key)
 
-    # Note: skip_diffusion can be enabled for large fields to improve performance
-    # The extra diffusion term is not part of standard Lenia, but may be desired for this use case
+    # Note: suzuki_style is enabled by default (prevents Turing pattern accumulation)
+    # Set suzuki_style=False to use classic direct injection mode
 
     field_config = FieldConfig(
         width=width,
@@ -905,6 +1142,16 @@ Examples:
         injection_power=field_section.get('injection_power', 0.1),
         use_fft=field_section.get('use_fft', True),
         skip_diffusion=field_section.get('skip_diffusion', True),
+        # Suzuki-style resource dynamics
+        suzuki_style=field_section.get('suzuki_style', True),
+        r_max=field_section.get('r_max', 1.0),
+        r_initial=field_section.get('r_initial', 1.0),
+        R_C=field_section.get('R_C', 0.005),
+        R_G=field_section.get('R_G', 0.001),
+        resource_rule=field_section.get('resource_rule', 'S'),
+        agents_emit_resources=field_section.get('agents_emit_resources', True),
+        resource_effect_rate=field_section.get('resource_effect_rate', 0.5),
+        resource_diffusion=field_section.get('resource_diffusion', 0.1),
     )
 
     # Build AgentConfig

@@ -15,10 +15,11 @@ from lenia_field.core import FieldConfig, LeniaField
 
 @pytest.fixture
 def small_config():
-    """Small field config for fast tests.
+    """Small field config for fast tests (classic injection mode).
 
     Note: injection_power must be > 1.0 to overcome negative Lenia growth
     when field is empty (growth = -1 when potential = 0).
+    Uses suzuki_style=False for classic injection behavior.
     """
     return FieldConfig(
         width=64,
@@ -27,13 +28,33 @@ def small_config():
         dt=0.1,
         diffusion=0.01,
         decay=0.001,
-        injection_power=2.0  # High enough to overcome growth=-1
+        injection_power=2.0,  # High enough to overcome growth=-1
+        suzuki_style=False    # Use classic injection mode for these tests
+    )
+
+
+@pytest.fixture
+def small_config_suzuki():
+    """Small field config with Suzuki resource dynamics enabled."""
+    return FieldConfig(
+        width=64,
+        height=64,
+        kernel_radius=5,
+        dt=0.1,
+        diffusion=0.01,
+        decay=0.001,
+        suzuki_style=True,
+        r_max=1.0,
+        r_initial=1.0,
+        R_C=0.005,
+        R_G=0.001,
+        resource_effect_rate=0.1
     )
 
 
 @pytest.fixture
 def default_config():
-    """Default field config."""
+    """Default field config (with Suzuki mode enabled by default)."""
     return FieldConfig()
 
 

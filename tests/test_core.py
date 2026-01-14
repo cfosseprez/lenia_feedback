@@ -32,7 +32,7 @@ class TestFieldConfig:
         assert config.kernel_radius == 13
         assert config.dt == 0.1
         assert config.diffusion == 0.01
-        assert config.decay == 0.001
+        assert config.decay == 0.01  # Paper-aligned value
         assert config.use_fft is True
 
     def test_custom_values(self):
@@ -199,23 +199,24 @@ class TestCreateInjectionMask:
         assert float(np.max(result)) > 0
 
     def test_injection_power_scaling(self):
-        """Test injection power affects field magnitude.
+        """Test injection power affects field magnitude (classic mode).
 
         Note: injection_power must be > 1.0 to overcome negative Lenia growth
         when field is empty (growth = -1 when potential = 0).
+        Uses suzuki_style=False for classic injection behavior.
         """
         from lenia_field.core import FieldConfig, LeniaField
 
         positions = np.array([[32, 32]], dtype=np.float32)
 
         # Lower power (but still > 1.0 to produce positive values)
-        config_low = FieldConfig(width=64, height=64, injection_power=1.5)
+        config_low = FieldConfig(width=64, height=64, injection_power=1.5, suzuki_style=False)
         field_low = LeniaField(config_low)
         result_low = field_low.step(positions=positions)
         max_low = float(np.max(result_low))
 
         # Higher power
-        config_high = FieldConfig(width=64, height=64, injection_power=3.0)
+        config_high = FieldConfig(width=64, height=64, injection_power=3.0, suzuki_style=False)
         field_high = LeniaField(config_high)
         result_high = field_high.step(positions=positions)
         max_high = float(np.max(result_high))
@@ -358,14 +359,15 @@ class TestLeniaField:
         assert final_max <= initial_max or final_max < 1.0
 
     def test_injection_radius_effect(self, small_config):
-        """Test injection radius affects spread."""
+        """Test injection radius affects spread (classic mode)."""
         positions = np.array([[32, 32]], dtype=np.float32)
 
         # Small radius (injection_power > 1.0 to overcome negative growth)
         config_small = FieldConfig(
             width=64, height=64,
             injection_radius=2.0,
-            injection_power=2.0
+            injection_power=2.0,
+            suzuki_style=False
         )
         field_small = LeniaField(config_small)
         field_small.step(positions=positions)
@@ -375,7 +377,8 @@ class TestLeniaField:
         config_large = FieldConfig(
             width=64, height=64,
             injection_radius=10.0,
-            injection_power=2.0
+            injection_power=2.0,
+            suzuki_style=False
         )
         field_large = LeniaField(config_large)
         field_large.step(positions=positions)
@@ -413,12 +416,14 @@ class TestLeniaFieldFFTvsNonFFT:
         config_fft = FieldConfig(
             width=32, height=32,
             kernel_radius=3,
-            use_fft=True
+            use_fft=True,
+            suzuki_style=False
         )
         config_direct = FieldConfig(
             width=32, height=32,
             kernel_radius=3,
-            use_fft=False
+            use_fft=False,
+            suzuki_style=False
         )
 
         positions = np.array([[16, 16]], dtype=np.float32)
@@ -438,11 +443,11 @@ class TestLeniaFieldFFTvsNonFFT:
 
 
 class TestLeniaFieldEdgeCases:
-    """Edge case tests for LeniaField."""
+    """Edge case tests for LeniaField (classic injection mode)."""
 
     def test_zero_dt(self):
         """Test behavior with zero time step."""
-        config = FieldConfig(width=32, height=32, dt=0.0)
+        config = FieldConfig(width=32, height=32, dt=0.0, suzuki_style=False)
         field = LeniaField(config)
         positions = np.array([[16, 16]], dtype=np.float32)
 
@@ -456,7 +461,7 @@ class TestLeniaFieldEdgeCases:
 
     def test_high_decay(self):
         """Test behavior with very high decay."""
-        config = FieldConfig(width=32, height=32, decay=1.0, injection_power=2.0)
+        config = FieldConfig(width=32, height=32, decay=1.0, injection_power=2.0, suzuki_style=False)
         field = LeniaField(config)
         positions = np.array([[16, 16]], dtype=np.float32)
 
@@ -471,8 +476,8 @@ class TestLeniaFieldEdgeCases:
         assert final_max < first_max
 
     def test_single_position(self):
-        """Test with single injection position."""
-        config = FieldConfig(width=32, height=32, injection_power=2.0)
+        """Test with single injection position (classic mode)."""
+        config = FieldConfig(width=32, height=32, injection_power=2.0, suzuki_style=False)
         field = LeniaField(config)
         positions = np.array([[16, 16]], dtype=np.float32)
 
@@ -480,8 +485,8 @@ class TestLeniaFieldEdgeCases:
         assert float(np.max(result)) > 0
 
     def test_many_positions(self):
-        """Test with many injection positions."""
-        config = FieldConfig(width=64, height=64)
+        """Test with many positions (Suzuki mode - just checks no crash)."""
+        config = FieldConfig(width=64, height=64, suzuki_style=True)
         field = LeniaField(config)
         positions = np.random.rand(100, 2).astype(np.float32) * 64
 
@@ -490,7 +495,7 @@ class TestLeniaFieldEdgeCases:
 
     def test_negative_positions_handled(self):
         """Test negative positions don't crash (edge handling)."""
-        config = FieldConfig(width=32, height=32)
+        config = FieldConfig(width=32, height=32, suzuki_style=True)
         field = LeniaField(config)
         positions = np.array([[-5, -5], [16, 16]], dtype=np.float32)
 
@@ -500,10 +505,210 @@ class TestLeniaFieldEdgeCases:
 
     def test_out_of_bounds_positions(self):
         """Test out-of-bounds positions don't crash."""
-        config = FieldConfig(width=32, height=32)
+        config = FieldConfig(width=32, height=32, suzuki_style=True)
         field = LeniaField(config)
         positions = np.array([[100, 100], [16, 16]], dtype=np.float32)
 
         # Should not raise
         result = field.step(positions=positions)
         assert isinstance(result, np.ndarray)
+
+
+class TestSuzukiResourceDynamics:
+    """Tests for Suzuki-style resource consumption model."""
+
+    def test_suzuki_mode_enabled_by_default(self):
+        """Test Suzuki mode is enabled by default."""
+        config = FieldConfig()
+        assert config.suzuki_style is True
+
+    def test_resource_field_initialized(self):
+        """Test resource field is initialized correctly."""
+        config = FieldConfig(width=32, height=32, suzuki_style=True, r_initial=1.0)
+        field = LeniaField(config)
+
+        resource = field.get_resource()
+        assert resource.shape == (32, 32)
+        assert np.allclose(resource, 1.0)
+
+    def test_resource_consumed_by_agents(self):
+        """Test agents consume resources at their positions when agents_emit_resources=False."""
+        config = FieldConfig(
+            width=64, height=64,
+            suzuki_style=True,
+            r_initial=1.0,
+            r_max=1.0,
+            agents_emit_resources=False,  # Agents CONSUME resources
+            resource_effect_rate=0.5,  # High rate to see effect quickly
+            R_G=0.0  # No recovery for this test
+        )
+        field = LeniaField(config)
+
+        positions = np.array([[32, 32]], dtype=np.float32)
+
+        # Run several steps
+        for _ in range(10):
+            field.step(positions=positions)
+
+        resource = field.get_resource()
+
+        # Resource should be depleted near agent position
+        center_resource = resource[32, 32]
+        edge_resource = resource[0, 0]
+
+        assert center_resource < edge_resource, "Resource at agent position should be lower"
+        assert center_resource < 1.0, "Resource should be consumed"
+
+    def test_resource_recovery(self):
+        """Test resource recovers over time."""
+        config = FieldConfig(
+            width=32, height=32,
+            suzuki_style=True,
+            r_initial=0.5,  # Start depleted
+            r_max=1.0,
+            R_G=0.1,  # High recovery rate
+            R_C=0.0,  # No consumption
+            resource_effect_rate=0.0
+        )
+        field = LeniaField(config)
+
+        initial_resource = field.get_resource().mean()
+
+        # Run steps without agents
+        for _ in range(50):
+            field.step()
+
+        final_resource = field.get_resource().mean()
+
+        # Resource should have recovered towards r_max
+        assert final_resource > initial_resource, "Resource should recover"
+
+    def test_resource_clamped_to_r_max(self):
+        """Test resource stays within [0, r_max]."""
+        config = FieldConfig(
+            width=32, height=32,
+            suzuki_style=True,
+            r_initial=1.0,
+            r_max=2.0,  # High max
+            R_G=0.1
+        )
+        field = LeniaField(config)
+
+        # Run many steps
+        for _ in range(100):
+            field.step()
+
+        resource = field.get_resource()
+        assert np.all(resource >= 0.0)
+        assert np.all(resource <= config.r_max)
+
+    def test_growth_modulated_by_resource(self):
+        """Test that growth is suppressed when resource is low."""
+        # High resource field
+        config_high = FieldConfig(
+            width=32, height=32,
+            suzuki_style=True,
+            r_initial=1.0,
+            r_max=1.0,
+            R_G=0.0,
+            R_C=0.0,
+            resource_effect_rate=0.0
+        )
+        field_high = LeniaField(config_high)
+        field_high.set_field(np.ones((32, 32)) * 0.15)  # Set to growth_mu
+
+        # Low resource field
+        config_low = FieldConfig(
+            width=32, height=32,
+            suzuki_style=True,
+            r_initial=0.1,  # Very low resource
+            r_max=1.0,
+            R_G=0.0,
+            R_C=0.0,
+            resource_effect_rate=0.0
+        )
+        field_low = LeniaField(config_low)
+        field_low.set_field(np.ones((32, 32)) * 0.15)
+
+        # Run steps
+        for _ in range(10):
+            field_high.step()
+            field_low.step()
+
+        # Growth should be higher with more resource
+        # (though exact comparison depends on other parameters)
+        assert not np.allclose(field_high.get_field(), field_low.get_field())
+
+    def test_rule_s_vs_rule_e(self):
+        """Test Rule S and Rule E produce different results."""
+        positions = np.array([[16, 16]], dtype=np.float32)
+
+        config_s = FieldConfig(
+            width=32, height=32,
+            suzuki_style=True,
+            resource_rule="S"
+        )
+        field_s = LeniaField(config_s)
+        field_s.set_field(np.ones((32, 32)) * 0.15)
+
+        config_e = FieldConfig(
+            width=32, height=32,
+            suzuki_style=True,
+            resource_rule="E"
+        )
+        field_e = LeniaField(config_e)
+        field_e.set_field(np.ones((32, 32)) * 0.15)
+
+        # Run steps
+        for _ in range(20):
+            field_s.step(positions=positions)
+            field_e.step(positions=positions)
+
+        # Results should differ
+        result_s = field_s.get_field()
+        result_e = field_e.get_field()
+
+        # They shouldn't be exactly identical (rules behave differently)
+        # Note: presence mask makes differences very small, but they should still differ
+        assert not np.array_equal(result_s, result_e), "Rule S and Rule E should produce different results"
+
+    def test_get_resource_uint8(self):
+        """Test get_resource_uint8 returns correct format."""
+        config = FieldConfig(width=32, height=32, suzuki_style=True, r_initial=0.5, r_max=1.0)
+        field = LeniaField(config)
+
+        resource = field.get_resource_uint8()
+        assert isinstance(resource, np.ndarray)
+        assert resource.dtype == np.uint8
+        assert np.all(resource <= 255)
+        assert np.all(resource >= 0)
+        # With r_initial=0.5 and r_max=1.0, should be around 127
+        assert np.mean(resource) > 100 and np.mean(resource) < 150
+
+    def test_reset_resets_resource(self):
+        """Test reset() also resets resource field."""
+        config = FieldConfig(
+            width=32, height=32,
+            suzuki_style=True,
+            r_initial=1.0,
+            r_max=1.0,           # Cap at 1.0 so no recovery above initial
+            R_G=0.001,           # Low recovery rate
+            agents_emit_resources=False,  # Agents CONSUME resources
+            resource_effect_rate=1.0 # High consumption to ensure depletion
+        )
+        field = LeniaField(config)
+        positions = np.array([[16, 16]], dtype=np.float32)
+        powers = np.array([1.0], dtype=np.float32)  # Explicit power for consumption
+
+        # Consume some resources
+        for _ in range(20):
+            field.step(positions=positions, powers=powers)
+
+        # Resource should be depleted (at least locally)
+        assert field.get_resource().min() < 1.0
+
+        # Reset
+        field.reset()
+
+        # Resource should be back to initial
+        assert np.allclose(field.get_resource(), config.r_initial)
